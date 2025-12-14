@@ -1,0 +1,146 @@
+mod addr;
+mod common;
+mod config;
+mod iroh_listener;
+mod listener;
+
+use std::{path::PathBuf, sync::Arc};
+
+use crate::{
+    addr::Target,
+    common::create_endpoint,
+    config::{Config, DstAddr, Forward, FromIrohAccept},
+};
+
+use anyhow::{Context, Result};
+use clap::Parser as _;
+use futures::future::try_join_all;
+use iroh::{
+    defaults::prod::default_relay_map, EndpointAddr, RelayConfig, SecretKey, TransportAddr,
+};
+use tokio::{fs::read_to_string, io::copy_bidirectional, net::TcpListener};
+
+use crate::{config::SrcAddr, iroh_listener::IrohListener, listener::DynListener};
+
+impl SrcAddr {
+    async fn bind(self) -> Result<Box<dyn DynListener>> {
+        match self {
+            SrcAddr::Tcp(addr) => Ok(Box::new(TcpListener::bind(addr).await?)),
+            SrcAddr::Iroh {
+                self_secret_key,
+                self_public_key,
+                accept,
+            } => {
+                if let Some(pk) = self_public_key {
+                    let expected_pk = self_secret_key.public();
+                    anyhow::ensure!(
+                        pk == expected_pk,
+                        "Provided public key {pk:?} does not match the public key {expected_pk:?} \
+						 which was derived from the provided secret key."
+                    );
+                }
+                let endpoint = create_endpoint(self_secret_key).await;
+                Ok(Box::new(IrohListener { endpoint, accept }))
+            }
+        }
+    }
+}
+
+#[derive(clap::Parser)]
+enum Cli {
+    Start { config: PathBuf },
+    Generate { server: PathBuf, client: PathBuf },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    Cli::parse().run().await
+}
+
+impl Cli {
+    async fn run(self) -> Result<()> {
+        match self {
+            Cli::Start { config } => start(config).await,
+            Cli::Generate { server, client } => generate(server, client).await,
+        }
+    }
+}
+
+async fn start(config: PathBuf) -> Result<()> {
+    let config_raw = read_to_string(&config)
+        .await
+        .with_context(|| format!("reading {:?}", &config))?;
+    let config: Config =
+        toml::from_str(&config_raw).with_context(|| format!("parsing {:?}", &config))?;
+    try_join_all(config.forward.into_iter().map(forward)).await?;
+    Ok(())
+}
+
+async fn generate(server: PathBuf, client: PathBuf) -> Result<()> {
+    let server_sk = SecretKey::generate(&mut rand::rng());
+    let client_sk = SecretKey::generate(&mut rand::rng());
+
+    write_config(
+        server,
+        Config {
+            forward: [Forward {
+                src: SrcAddr::Iroh {
+                    self_secret_key: server_sk.clone(),
+                    self_public_key: Some(server_sk.public()),
+                    accept: FromIrohAccept::Only([client_sk.public()].into()),
+                },
+                dst: DstAddr::Tcp(([127, 0, 0, 1], 8080).into()),
+            }]
+            .into(),
+        },
+    )
+    .await?;
+    write_config(
+        client,
+        Config {
+            forward: [Forward {
+                src: SrcAddr::Tcp(([127, 0, 0, 1], 9090).into()),
+                dst: DstAddr::Iroh {
+                    self_secret_key: Some(client_sk.clone()),
+                    self_public_key: Some(client_sk.public()),
+                    target: EndpointAddr::from_parts(server_sk.public(), default_relays()),
+                },
+            }]
+            .into(),
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+fn default_relays() -> Vec<TransportAddr> {
+    let relays: Vec<Arc<RelayConfig>> = default_relay_map().relays();
+    relays
+        .into_iter()
+        .map(|r| TransportAddr::Relay(r.url.clone()))
+        .collect()
+}
+
+async fn write_config(p: PathBuf, c: Config) -> Result<()> {
+    let s = toml::to_string_pretty(&c).unwrap();
+    tokio::fs::write(&p, s)
+        .await
+        .with_context(|| format!("writing {:?}", &p))?;
+    Ok(())
+}
+
+async fn forward(forward: Forward) -> Result<()> {
+    let mut listener = forward.src.bind().await?;
+    let forward_to = Target::from_addr(forward.dst)?;
+    loop {
+        let mut inbound = listener.dyn_accept().await;
+        let forward_to = forward_to.clone();
+        tokio::spawn(async move {
+            let Ok(mut outbound) = forward_to.connect().await else {
+                return;
+            };
+            let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
+        });
+    }
+}
