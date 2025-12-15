@@ -1,16 +1,10 @@
-mod addr;
 mod common;
 mod config;
-mod iroh_listener;
-mod listener;
+mod iroh_portal;
+mod portal;
+mod tcp_portal;
 
 use std::{path::PathBuf, sync::Arc};
-
-use crate::{
-    addr::Target,
-    common::create_endpoint,
-    config::{Config, DstAddr, Forward, FromIrohAccept},
-};
 
 use anyhow::{Context, Result};
 use clap::Parser as _;
@@ -18,33 +12,12 @@ use futures::future::try_join_all;
 use iroh::{
     defaults::prod::default_relay_map, EndpointAddr, RelayConfig, SecretKey, TransportAddr,
 };
-use tokio::{fs::read_to_string, io::copy_bidirectional, net::TcpListener};
+use tokio::{fs::read_to_string, io::copy_bidirectional};
 
-use crate::{config::SrcAddr, iroh_listener::IrohListener, listener::DynListener};
-
-impl SrcAddr {
-    async fn bind(self) -> Result<Box<dyn DynListener>> {
-        match self {
-            SrcAddr::Tcp(addr) => Ok(Box::new(TcpListener::bind(addr).await?)),
-            SrcAddr::Iroh {
-                self_secret_key,
-                self_public_key,
-                accept,
-            } => {
-                if let Some(pk) = self_public_key {
-                    let expected_pk = self_secret_key.public();
-                    anyhow::ensure!(
-                        pk == expected_pk,
-                        "Provided public key {pk:?} does not match the public key {expected_pk:?} \
-						 which was derived from the provided secret key."
-                    );
-                }
-                let endpoint = create_endpoint(self_secret_key).await;
-                Ok(Box::new(IrohListener { endpoint, accept }))
-            }
-        }
-    }
-}
+use crate::{
+    config::{Config, DstAddr, Forward, FromIrohAccept, SrcAddr},
+    portal::Portal,
+};
 
 #[derive(clap::Parser)]
 enum Cli {
@@ -131,15 +104,16 @@ async fn write_config(p: PathBuf, c: Config) -> Result<()> {
 }
 
 async fn forward(forward: Forward) -> Result<()> {
-    let mut listener = forward.src.bind().await?;
-    let forward_to = Target::from_addr(forward.dst)?;
+    let mut listener = forward.src.portal().await?;
+    let mut forward_to = forward.dst.portal().await?;
     loop {
-        let mut inbound = listener.dyn_accept().await;
-        let forward_to = forward_to.clone();
+        let mut inbound = listener.link().await?;
+
+		// inefficiency here, shouldn't need to wait for
+		// outbound connect before accepting more links
+        let mut outbound = forward_to.link().await?;
+		
         tokio::spawn(async move {
-            let Ok(mut outbound) = forward_to.connect().await else {
-                return;
-            };
             let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
         });
     }
