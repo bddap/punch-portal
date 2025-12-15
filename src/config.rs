@@ -28,7 +28,11 @@ pub enum SrcAddr {
     Tcp(SocketAddr),
     Iroh {
         self_secret_key: SecretKey,
+
+        // feature lacking here, doesn't allow us to specify relays perhaps
+        // this should be Option<EndpointAddr>
         self_public_key: Option<PublicKey>,
+
         accept: FromIrohAccept,
     },
 }
@@ -39,6 +43,9 @@ pub enum FromIrohAccept {
     Only(HashSet<PublicKey>),
 }
 
+// if you want your mind blown, think about what would happn if src and dst
+// were a unified structure. if both src and dst could be either
+// 'TcpListen' or `TcpConnect`
 #[allow(clippy::large_enum_variant)]
 #[derive(Deserialize, Serialize, Clone)]
 pub enum DstAddr {

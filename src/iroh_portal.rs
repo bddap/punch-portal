@@ -11,8 +11,8 @@ pub struct IrohListener {
 }
 
 impl Portal for IrohListener {
-	async fn link(&mut self) -> Result<impl AsyncReadWrite + 'static> {
-		loop {
+    async fn link(&mut self) -> Result<impl AsyncReadWrite + 'static> {
+        loop {
             let Some(incomming) = self.iroh.accept().await else {
                 continue;
             };
@@ -26,7 +26,9 @@ impl Portal for IrohListener {
                 continue;
             };
 
-            if let FromIrohAccept::Only(allowed) = &self.accept && !allowed.contains(&conn.remote_id()) {
+            if let FromIrohAccept::Only(allowed) = &self.accept
+                && !allowed.contains(&conn.remote_id())
+            {
                 conn.close(0u32.into(), b"nope");
                 continue;
             }
@@ -37,8 +39,8 @@ impl Portal for IrohListener {
                 continue;
             };
 
-			recv.read_exact(&mut [0u8]).await?;
-			
+            recv.read_exact(&mut [0u8]).await?;
+
             return Ok(tokio::io::join(recv, send));
         }
     }
@@ -50,12 +52,12 @@ pub struct IrohConnect {
 }
 
 impl Portal for IrohConnect {
-	async fn link(&mut self) -> Result<impl AsyncReadWrite + 'static> {
-		let conn = self.iroh.connect(self.target.clone(), ALPN).await?;
-		let (mut send, recv) = conn.open_bi().await?;
-		
-		send.write_all(&[0u8]).await?;
-		
-		Ok(tokio::io::join(recv, send))
-	}
+    async fn link(&mut self) -> Result<impl AsyncReadWrite + 'static> {
+        let conn = self.iroh.connect(self.target.clone(), ALPN).await?;
+        let (mut send, recv) = conn.open_bi().await?;
+
+        send.write_all(&[0u8]).await?;
+
+        Ok(tokio::io::join(recv, send))
+    }
 }

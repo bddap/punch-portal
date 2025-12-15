@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use clap::Parser as _;
 use futures::future::try_join_all;
 use iroh::{
-    defaults::prod::default_relay_map, EndpointAddr, RelayConfig, SecretKey, TransportAddr,
+    EndpointAddr, RelayConfig, SecretKey, TransportAddr, defaults::prod::default_relay_map,
 };
 use tokio::{fs::read_to_string, io::copy_bidirectional};
 
@@ -109,10 +109,10 @@ async fn forward(forward: Forward) -> Result<()> {
     loop {
         let mut inbound = listener.link().await?;
 
-		// inefficiency here, shouldn't need to wait for
-		// outbound connect before accepting more links
+        // inefficiency here, shouldn't need to wait for
+        // outbound connect before accepting more links
         let mut outbound = forward_to.link().await?;
-		
+
         tokio::spawn(async move {
             let _ = copy_bidirectional(&mut inbound, &mut outbound).await;
         });

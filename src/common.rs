@@ -1,8 +1,8 @@
 use std::pin::Pin;
 
 use iroh::{
-    discovery::{dns::DnsDiscovery, mdns::MdnsDiscovery, pkarr::PkarrPublisher},
     Endpoint, SecretKey,
+    discovery::{dns::DnsDiscovery, mdns::MdnsDiscovery, pkarr::PkarrPublisher},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 

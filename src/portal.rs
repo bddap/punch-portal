@@ -1,10 +1,10 @@
 use std::future::Future;
 
 use anyhow::Result;
-use futures::future::BoxFuture;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 
-use crate::common::{box_stream, AsyncReadWrite, BoxStream};
+use crate::common::{AsyncReadWrite, BoxStream, box_stream};
 
 pub trait Portal: Send {
     fn link<'a>(
