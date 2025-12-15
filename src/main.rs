@@ -10,12 +10,12 @@ use anyhow::{Context, Result};
 use clap::Parser as _;
 use futures::future::try_join_all;
 use iroh::{
-    EndpointAddr, RelayConfig, SecretKey, TransportAddr, defaults::prod::default_relay_map,
+    defaults::prod::default_relay_map, EndpointAddr, RelayConfig, SecretKey, TransportAddr,
 };
 use tokio::{fs::read_to_string, io::copy_bidirectional};
 
 use crate::{
-    config::{Config, DstAddr, Forward, FromIrohAccept, SrcAddr},
+    config::{Config, FromIrohAccept, Patch, Plug},
     portal::Portal,
 };
 
@@ -23,6 +23,7 @@ use crate::{
 enum Cli {
     Start { config: PathBuf },
     Generate { server: PathBuf, client: PathBuf },
+    GenerateMeet { server: PathBuf },
 }
 
 #[tokio::main]
@@ -35,6 +36,7 @@ impl Cli {
         match self {
             Cli::Start { config } => start(config).await,
             Cli::Generate { server, client } => generate(server, client).await,
+            Cli::GenerateMeet { server } => generate_meet(server).await,
         }
     }
 }
@@ -45,7 +47,7 @@ async fn start(config: PathBuf) -> Result<()> {
         .with_context(|| format!("reading {:?}", &config))?;
     let config: Config =
         toml::from_str(&config_raw).with_context(|| format!("parsing {:?}", &config))?;
-    try_join_all(config.forward.into_iter().map(forward)).await?;
+    try_join_all(config.patch.into_iter().map(forward)).await?;
     Ok(())
 }
 
@@ -56,13 +58,13 @@ async fn generate(server: PathBuf, client: PathBuf) -> Result<()> {
     write_config(
         server,
         Config {
-            forward: [Forward {
-                src: SrcAddr::Iroh {
+            patch: [Patch {
+                src: Plug::IrohListen {
                     self_secret_key: server_sk.clone(),
                     self_public_key: Some(server_sk.public()),
                     accept: FromIrohAccept::Only([client_sk.public()].into()),
                 },
-                dst: DstAddr::Tcp(([127, 0, 0, 1], 8080).into()),
+                dst: Plug::TcpConnect(([127, 0, 0, 1], 8080).into()),
             }]
             .into(),
         },
@@ -71,13 +73,30 @@ async fn generate(server: PathBuf, client: PathBuf) -> Result<()> {
     write_config(
         client,
         Config {
-            forward: [Forward {
-                src: SrcAddr::Tcp(([127, 0, 0, 1], 9090).into()),
-                dst: DstAddr::Iroh {
+            patch: [Patch {
+                src: Plug::TcpListen(([127, 0, 0, 1], 9090).into()),
+                dst: Plug::IrohConnect {
                     self_secret_key: Some(client_sk.clone()),
                     self_public_key: Some(client_sk.public()),
                     target: EndpointAddr::from_parts(server_sk.public(), default_relays()),
                 },
+            }]
+            .into(),
+        },
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn generate_meet(server: PathBuf) -> Result<()> {
+    write_config(
+        server,
+        Config {
+            patch: [Patch {
+                // would be cool to find a way to let src and dst listen on the same port
+                src: Plug::TcpListen(([127, 0, 0, 1], 9091).into()),
+                dst: Plug::TcpListen(([127, 0, 0, 1], 8081).into()),
             }]
             .into(),
         },
@@ -103,7 +122,7 @@ async fn write_config(p: PathBuf, c: Config) -> Result<()> {
     Ok(())
 }
 
-async fn forward(forward: Forward) -> Result<()> {
+async fn forward(forward: Patch) -> Result<()> {
     let mut listener = forward.src.portal().await?;
     let mut forward_to = forward.dst.portal().await?;
     loop {

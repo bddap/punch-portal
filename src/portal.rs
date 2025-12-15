@@ -6,6 +6,8 @@ use futures::future::BoxFuture;
 
 use crate::common::{AsyncReadWrite, BoxStream, box_stream};
 
+// is "Portal" the right name?
+// Perhaps it's more of a "Socket". An "Endpoint".
 pub trait Portal: Send {
     fn link<'a>(
         &'a mut self,

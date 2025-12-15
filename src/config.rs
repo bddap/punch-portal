@@ -13,20 +13,33 @@ use crate::{
 
 #[derive(Deserialize, Serialize)]
 pub struct Config {
-    pub forward: Vec<Forward>,
+    pub patch: Vec<Patch>,
 }
 
 #[derive(Deserialize, Serialize)]
-pub struct Forward {
-    pub src: SrcAddr,
-    pub dst: DstAddr,
+pub struct Patch {
+    pub src: Plug,
+    pub dst: Plug,
+}
+
+#[derive(Deserialize, Serialize)]
+pub enum FromIrohAccept {
+    All,
+    Only(HashSet<PublicKey>),
 }
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Deserialize, Serialize)]
-pub enum SrcAddr {
-    Tcp(SocketAddr),
-    Iroh {
+pub enum Plug {
+    TcpConnect(SocketAddr),
+    TcpListen(SocketAddr),
+    IrohConnect {
+        self_secret_key: Option<SecretKey>,
+        self_public_key: Option<PublicKey>,
+        target: EndpointAddr,
+    },
+    // iroh listen and iroh connect seem so similar, I wonder if they could be unified
+    IrohListen {
         self_secret_key: SecretKey,
 
         // feature lacking here, doesn't allow us to specify relays perhaps
@@ -37,51 +50,7 @@ pub enum SrcAddr {
     },
 }
 
-#[derive(Deserialize, Serialize)]
-pub enum FromIrohAccept {
-    All,
-    Only(HashSet<PublicKey>),
-}
-
-// if you want your mind blown, think about what would happn if src and dst
-// were a unified structure. if both src and dst could be either
-// 'TcpListen' or `TcpConnect`
-#[allow(clippy::large_enum_variant)]
-#[derive(Deserialize, Serialize, Clone)]
-pub enum DstAddr {
-    Tcp(SocketAddr),
-    Iroh {
-        self_secret_key: Option<SecretKey>,
-        self_public_key: Option<PublicKey>,
-        target: EndpointAddr,
-    },
-}
-
-impl SrcAddr {
-    pub async fn portal(self) -> Result<BoxPortal> {
-        match self {
-            SrcAddr::Tcp(addr) => Ok(BoxPortal::new(TcpListener::bind(addr).await?)),
-            SrcAddr::Iroh {
-                self_secret_key,
-                self_public_key,
-                accept,
-            } => {
-                if let Some(pk) = self_public_key {
-                    let expected_pk = self_secret_key.public();
-                    anyhow::ensure!(
-                        pk == expected_pk,
-                        "Provided public key {pk:?} does not match the public key {expected_pk:?} \
-						 which was derived from the provided secret key."
-                    );
-                }
-                let iroh = create_endpoint(self_secret_key).await;
-                Ok(BoxPortal::new(IrohListener { iroh, accept }))
-            }
-        }
-    }
-}
-
-impl DstAddr {
+impl Plug {
     pub async fn portal(self) -> Result<BoxPortal> {
         async fn iroh_connect(sk: SecretKey, target: EndpointAddr) -> BoxPortal {
             let iroh = create_endpoint(sk).await;
@@ -89,8 +58,11 @@ impl DstAddr {
         }
 
         match self {
-            DstAddr::Tcp(socket_addr) => Ok(BoxPortal::new(socket_addr)),
-            DstAddr::Iroh {
+            Plug::TcpConnect(socket_addr) => Ok(BoxPortal::new(socket_addr)),
+            Plug::TcpListen(socket_addr) => {
+                Ok(BoxPortal::new(TcpListener::bind(socket_addr).await?))
+            }
+            Plug::IrohConnect {
                 self_secret_key: Some(sk),
                 self_public_key: Some(pk),
                 target,
@@ -106,21 +78,37 @@ impl DstAddr {
                 );
                 Ok(iroh_connect(sk, target).await)
             }
-            DstAddr::Iroh {
+            Plug::IrohConnect {
                 self_secret_key: None,
                 self_public_key: None,
                 target,
             } => Ok(iroh_connect(SecretKey::generate(&mut rand::rng()), target).await),
-            DstAddr::Iroh {
+            Plug::IrohConnect {
                 self_secret_key: Some(sk),
                 self_public_key: None,
                 target,
             } => Ok(iroh_connect(sk, target).await),
-            DstAddr::Iroh {
+            Plug::IrohConnect {
                 self_secret_key: None,
                 self_public_key: Some(_),
                 ..
             } => anyhow::bail!("Public key provided without secret key"),
+            Plug::IrohListen {
+                self_secret_key,
+                self_public_key,
+                accept,
+            } => {
+                if let Some(pk) = self_public_key {
+                    let expected_pk = self_secret_key.public();
+                    anyhow::ensure!(
+                        pk == expected_pk,
+                        "Provided public key {pk:?} does not match the public key {expected_pk:?} \
+						 which was derived from the provided secret key."
+                    );
+                }
+                let iroh = create_endpoint(self_secret_key).await;
+                Ok(BoxPortal::new(IrohListener { iroh, accept }))
+            }
         }
     }
 }

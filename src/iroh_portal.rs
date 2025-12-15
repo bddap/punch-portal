@@ -39,13 +39,16 @@ impl Portal for IrohListener {
                 continue;
             };
 
-            recv.read_exact(&mut [0u8]).await?;
+            if recv.read_exact(&mut [0u8]).await.is_err() {
+                continue;
+            }
 
             return Ok(tokio::io::join(recv, send));
         }
     }
 }
 
+// we should change this to preemptively connect
 pub struct IrohConnect {
     pub iroh: Endpoint,
     pub target: EndpointAddr,
